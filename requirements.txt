@@ -1,0 +1,3 @@
+# other libs
+simple-parsing==0.1.3
+opencv-python==4.8.0.76
