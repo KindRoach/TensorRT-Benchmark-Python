@@ -8,7 +8,7 @@ import numpy
 from torchvision.models import resnet50, ResNet50_Weights, efficientnet_v2_l, EfficientNet_V2_L_Weights
 from torchvision.models._api import WeightsEnum
 
-TENSORRT_MODEL_PATH_PATTERN = "output/model/%s/model.ts"
+TENSORRT_MODEL_PATH_PATTERN = "output/model/%s/%s/model.ts"
 TEST_VIDEO_PATH = "output/video.mp4"
 TEST_IMAGE_PATH = "output/image.jpg"
 

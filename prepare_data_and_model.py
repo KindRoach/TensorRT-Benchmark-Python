@@ -1,3 +1,4 @@
+import numpy
 import torch
 import logging
 import sys
@@ -9,8 +10,10 @@ from typing import List
 import torch_tensorrt
 from simple_parsing import choice, ArgumentParser
 from torch.nn import Module
+from torch.utils.data import DataLoader, TensorDataset
+
 from util import MODEL_MAP, ModelMeta, TENSORRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
-    TEST_IMAGE_PATH
+    TEST_IMAGE_PATH, read_all_frames, preprocess
 
 
 def download_file(url: str, target_path: str) -> None:
@@ -49,13 +52,57 @@ def download_model(model: ModelMeta) -> Module:
 
 def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
     logging.info("Converting Model to TensorRT...")
-    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name,)
     inputs = [
         torch_tensorrt.Input(shape=[1, *model_meta.input_size], dtype=torch.float),
     ]
-    trt_ts_module = torch_tensorrt.compile(model, inputs=inputs)
+
+    # fp32
+    trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, })
+    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
+    torch._dynamo.reset()
+
+    # fp16
+    trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, torch.half, })
+    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
+    torch.jit.save(trt_ts_module, model_ts)
+    torch._dynamo.reset()
+
+    # int8
+    frames = []
+    for frame in read_all_frames():
+        frame = preprocess(frame, model_meta)[0]
+        frames.append(frame)
+
+    frames = torch.tensor(numpy.array(frames))
+    dataloader = DataLoader(TensorDataset(frames), batch_size=1)
+
+    calibrator = torch_tensorrt.ptq.DataLoaderCalibrator(
+        dataloader,
+        cache_file="./calibration.cache",
+        use_cache=False,
+        algo_type=torch_tensorrt.ptq.CalibrationAlgo.ENTROPY_CALIBRATION_2,
+        device=torch.device("cuda:0"),
+    )
+
+    trt_ts_module = torch_tensorrt.compile(
+        model, inputs=inputs,
+        enabled_precisions={torch.float, torch.half, torch.int8},
+        calibrator=calibrator,
+        device={
+            "device_type": torch_tensorrt.DeviceType.GPU,
+            "gpu_id": 0,
+            "dla_core": 0,
+            "allow_gpu_fallback": False,
+            "disable_tf32": False
+        })
+
+    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
+    Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
+    torch.jit.save(trt_ts_module, model_ts)
+    torch._dynamo.reset()
 
 
 @dataclass
