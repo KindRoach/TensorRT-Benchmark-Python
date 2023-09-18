@@ -12,7 +12,7 @@ from simple_parsing import choice, ArgumentParser
 from torch.nn import Module
 from torch.utils.data import DataLoader, TensorDataset
 
-from util import MODEL_MAP, ModelMeta, TENSORRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
+from util import MODEL_MAP, ModelMeta, PYTORCH_TENSORRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
     TEST_IMAGE_PATH, read_all_frames, preprocess
 
 
@@ -45,9 +45,7 @@ def download_model(model: ModelMeta) -> Module:
     load_func = model.load_func
 
     model = load_func(weights=weight)
-    model.eval()
-
-    return model
+    return model.eval().cuda()
 
 
 def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
@@ -58,17 +56,15 @@ def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
 
     # fp32
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, })
-    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
+    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
-    torch._dynamo.reset()
 
     # fp16
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, torch.half, })
-    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
-    torch._dynamo.reset()
 
     # int8
     frames = []
@@ -99,10 +95,9 @@ def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
             "disable_tf32": False
         })
 
-    model_ts = TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
+    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
-    torch._dynamo.reset()
 
 
 @dataclass
