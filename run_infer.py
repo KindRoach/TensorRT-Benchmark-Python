@@ -10,7 +10,7 @@ from simple_parsing import choice, flag, field, ArgumentParser
 from torch import nn
 from tqdm import tqdm
 
-from util import PYTORCH_TENSORRT_MODEL_PATH_PATTERN, ModelMeta, MODEL_MAP, read_input_with_time, cal_fps
+from util import PYTORCH_TRT_MODEL_PATH_PATTERN, ModelMeta, MODEL_MAP, read_input_with_time, cal_fps
 
 
 @dataclass
@@ -38,7 +38,7 @@ def sync_infer(args: Args, model: nn.Module, model_meta: ModelMeta) -> list:
 
 
 def load_model(model_meta: ModelMeta, model_type: str, device: str):
-    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, model_type)
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, model_type)
     torch_device = torch.device(device)
     model = torch.jit.load(model_ts).to(torch_device)
     return model

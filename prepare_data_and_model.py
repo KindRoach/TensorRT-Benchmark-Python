@@ -1,3 +1,5 @@
+import subprocess
+
 import numpy
 import torch
 import logging
@@ -12,8 +14,8 @@ from simple_parsing import choice, ArgumentParser
 from torch.nn import Module
 from torch.utils.data import DataLoader, TensorDataset
 
-from util import MODEL_MAP, ModelMeta, PYTORCH_TENSORRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
-    TEST_IMAGE_PATH, read_all_frames, preprocess
+from util import MODEL_MAP, ModelMeta, PYTORCH_TRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
+    TEST_IMAGE_PATH, read_all_frames, preprocess, ONNX_MODEL_PATH_PATTERN, TRTEXEC_MODEL_PATH_PATTERN
 
 
 def download_file(url: str, target_path: str) -> None:
@@ -48,7 +50,7 @@ def download_model(model: ModelMeta) -> Module:
     return model.eval().cuda()
 
 
-def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
+def convert_tensorRT_by_torchTRT(model_meta: ModelMeta, model: Module) -> None:
     logging.info("Converting Model to TensorRT...")
     inputs = [
         torch_tensorrt.Input(shape=[1, *model_meta.input_size], dtype=torch.float),
@@ -56,13 +58,13 @@ def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
 
     # fp32
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, })
-    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
 
     # fp16
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, torch.half, })
-    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
 
@@ -95,9 +97,34 @@ def convert_torch_to_tensorRT(model_meta: ModelMeta, model: Module) -> None:
             "disable_tf32": False
         })
 
-    model_ts = PYTORCH_TENSORRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
     torch.jit.save(trt_ts_module, model_ts)
+
+
+def convert_tensorRT_by_trtexec(model_meta: ModelMeta, model: Module) -> None:
+    # convert to onnx
+    onnx_path = ONNX_MODEL_PATH_PATTERN % model_meta.name
+    Path(onnx_path).parent.mkdir(parents=True, exist_ok=True)
+    dummy_input = torch.randn(1, 3, 224, 224).cuda()
+    torch.onnx.export(model, (dummy_input,), onnx_path)
+
+    # convert to tensorrt engine (FP32)
+    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
+    subprocess.run([
+        "trtexec",
+        f"--onnx={onnx_path}",
+        f"--saveEngine={plan_path}"
+    ])
+
+    # convert to tensorrt engine (FP16)
+    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    subprocess.run([
+        "trtexec",
+        "--fp16",
+        f"--onnx={onnx_path}",
+        f"--saveEngine={plan_path}"
+    ])
 
 
 @dataclass
@@ -112,7 +139,8 @@ def main(args: Args) -> None:
     for model_name in models:
         model_meta = MODEL_MAP[model_name]
         model = download_model(model_meta)
-        convert_torch_to_tensorRT(model_meta, model)
+        convert_tensorRT_by_torchTRT(model_meta, model)
+        convert_tensorRT_by_trtexec(model_meta, model)
 
 
 def parse_args(args: List[str]):
