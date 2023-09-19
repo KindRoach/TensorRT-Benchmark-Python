@@ -1,11 +1,17 @@
 import os
 import sys
-from dataclasses import dataclass
 from typing import List
 
 import torch
-import torch_tensorrt  # keep this line for load TensorRT model.
+
+# keep this import for load TensorRT model.
+# noinspection PyUnresolvedReferences
+import torch_tensorrt
+logger = torch_tensorrt.logging
+logger.set_reportable_log_level(torch_tensorrt.logging.Level.Error)
+
 import tqdm
+from dataclasses import dataclass
 from simple_parsing import choice, flag, field, ArgumentParser
 from torch import nn
 from tqdm import tqdm
@@ -16,7 +22,7 @@ from util import PYTORCH_TRT_MODEL_PATH_PATTERN, ModelMeta, MODEL_MAP, read_inpu
 @dataclass
 class Args:
     model: str = choice(*MODEL_MAP.keys(), alias=["-m"], default="resnet_50")
-    model_type: str = choice("fp32", "fp16", "int8", alias=["-mt"], default="int8")
+    model_type: str = choice("fp32", "fp16", "int8", alias=["-mt"], default="fp32")
     device: str = field(alias=["-d"], default="cuda:0")  # The device used for OpenVINO: CPU, GPU, MULTI:CPU,GPU ...
     inference_only: bool = flag(alias=["-io"], default=False)
     run_mode: str = choice("sync", "async", "multi", "one_decode_multi", alias=["-rm"], default="sync")

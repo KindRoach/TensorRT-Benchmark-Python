@@ -1,15 +1,14 @@
-import subprocess
-
-import numpy
-import torch
 import logging
+import subprocess
 import sys
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+import numpy
+import torch
 import torch_tensorrt
+from dataclasses import dataclass
 from simple_parsing import choice, ArgumentParser
 from torch.nn import Module
 from torch.utils.data import DataLoader, TensorDataset
@@ -139,7 +138,7 @@ def main(args: Args) -> None:
     for model_name in models:
         model_meta = MODEL_MAP[model_name]
         model = download_model(model_meta)
-        convert_tensorRT_by_torchTRT(model_meta, model)
+        # convert_tensorRT_by_torchTRT(model_meta, model)
         convert_tensorRT_by_trtexec(model_meta, model)
 
 
