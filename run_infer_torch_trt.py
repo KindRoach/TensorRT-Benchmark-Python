@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from typing import List
@@ -7,8 +8,7 @@ import torch
 # keep this import for load TensorRT model.
 # noinspection PyUnresolvedReferences
 import torch_tensorrt
-logger = torch_tensorrt.logging
-logger.set_reportable_log_level(torch_tensorrt.logging.Level.Error)
+logging.getLogger().setLevel(logging.WARNING)
 
 import tqdm
 from dataclasses import dataclass
