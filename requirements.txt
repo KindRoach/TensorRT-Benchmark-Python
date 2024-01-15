@@ -1,3 +1,4 @@
 # other libs
+timm==0.9.12
 simple-parsing==0.1.4
 opencv-contrib-python-headless==4.5.5.64

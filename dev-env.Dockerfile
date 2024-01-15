@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:23.05-py3
+FROM nvcr.io/nvidia/pytorch:23.12-py3
 LABEL authors="kindroach"
 
 ARG DEBIAN_FRONTEND=noninteractive

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from typing import List
@@ -9,12 +10,12 @@ from dataclasses import dataclass
 from simple_parsing import choice, flag, field, ArgumentParser
 from tqdm import tqdm
 
-from util import ModelMeta, MODEL_MAP, TRTEXEC_MODEL_PATH_PATTERN, read_input_with_time, cal_fps
+from util import read_input_with_time, cal_fps_from_tqdm, MODEL_CFG_PATH_PATTERN, TRTEXEC_MODEL_PATH_PATTERN, MODEL_LIST
 
 
 @dataclass
 class Args:
-    model: str = choice(*MODEL_MAP.keys(), alias=["-m"], default="resnet_50")
+    model: str = choice(*MODEL_LIST, alias=["-m"], default="resnet50")
     model_type: str = choice("fp32", "fp16", alias=["-mt"], default="fp32")
     device: int = field(alias=["-d"], default="0")  # The CUDA device id used for TensorRT ...
     inference_only: bool = flag(alias=["-io"], default=False)
@@ -23,7 +24,7 @@ class Args:
     duration: int = field(alias=["-t"], default=60)
 
 
-def sync_infer(args: Args, engine: trt.ICudaEngine, model_meta: ModelMeta) -> list:
+def sync_infer(args: Args, engine: trt.ICudaEngine, model_cfg: dict) -> list:
     outputs = []
 
     context = engine.create_execution_context()
@@ -41,7 +42,15 @@ def sync_infer(args: Args, engine: trt.ICudaEngine, model_meta: ModelMeta) -> li
     output_buffer_D = cudart.cudaMalloc(output_buffer_H.nbytes)[1]
 
     with tqdm(unit="frame") as pbar:
-        for frame in read_input_with_time(args.duration, model_meta, args.inference_only):
+        frames = read_input_with_time(
+            args.duration,
+            model_cfg["input_size"],
+            model_cfg["mean"],
+            model_cfg["std"],
+            args.inference_only
+        )
+
+        for frame in frames:
             cudart.cudaMemcpy(
                 input_buffer_D,
                 frame.ctypes.data,
@@ -64,12 +73,12 @@ def sync_infer(args: Args, engine: trt.ICudaEngine, model_meta: ModelMeta) -> li
     cudart.cudaFree(input_buffer_D)
     cudart.cudaFree(output_buffer_D)
 
-    cal_fps(pbar)
+    cal_fps_from_tqdm(pbar)
     return outputs
 
 
-def load_model(model_meta: ModelMeta, model_type: str):
-    model_plan = TRTEXEC_MODEL_PATH_PATTERN % (model_meta.name, model_type)
+def load_model(model_name: str, model_type: str):
+    model_plan = TRTEXEC_MODEL_PATH_PATTERN % (model_name, model_type)
     with open(model_plan, "rb") as f:
         engine_string = f.read()
     logger = trt.Logger(trt.Logger.ERROR)
@@ -79,9 +88,10 @@ def load_model(model_meta: ModelMeta, model_type: str):
 
 def main(args: Args) -> None:
     cudart.cudaSetDevice(args.device)
-    model_meta = MODEL_MAP[args.model]
-    model = load_model(model_meta, args.model_type)
-    globals()[f"{args.run_mode}_infer"](args, model, model_meta)
+    with open(MODEL_CFG_PATH_PATTERN % args.model, "r", encoding="utf-8") as f:
+        model_cfg = json.load(f)
+    model = load_model(args.model, args.model_type)
+    globals()[f"{args.run_mode}_infer"](args, model, model_cfg)
 
 
 def parse_args(args: List[str]):

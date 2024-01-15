@@ -1,3 +1,4 @@
+import json
 import logging
 import subprocess
 import sys
@@ -6,16 +7,19 @@ from pathlib import Path
 from typing import List
 
 import numpy
+import timm
 import torch
+
 import torch_tensorrt
 logging.getLogger().setLevel(logging.WARNING)
+
 from dataclasses import dataclass
 from simple_parsing import choice, ArgumentParser
 from torch.nn import Module
 from torch.utils.data import DataLoader, TensorDataset
 
-from util import MODEL_MAP, ModelMeta, PYTORCH_TRT_MODEL_PATH_PATTERN, TEST_VIDEO_PATH, \
-    TEST_IMAGE_PATH, read_all_frames, preprocess, ONNX_MODEL_PATH_PATTERN, TRTEXEC_MODEL_PATH_PATTERN
+from util import read_all_frames, preprocess, TEST_VIDEO_PATH, TEST_IMAGE_PATH, ONNX_MODEL_PATH_PATTERN, \
+    TRTEXEC_MODEL_PATH_PATTERN, PYTORCH_TRT_MODEL_PATH_PATTERN, MODEL_LIST, MODEL_CFG_PATH_PATTERN
 
 
 def download_file(url: str, target_path: str) -> None:
@@ -40,77 +44,78 @@ def download_video_and_image() -> None:
     )
 
 
-def download_model(model: ModelMeta) -> Module:
-    logging.info("Downloading Model...")
-
-    weight = model.weight
-    load_func = model.load_func
-
-    model = load_func(weights=weight)
-    return model.eval().cuda()
-
-
-def convert_tensorRT_by_torchTRT(model_meta: ModelMeta, model: Module) -> None:
+def convert_tensorRT_by_torchTRT(model: Module) -> None:
     logging.info("Converting Model to TensorRT...")
-    inputs = [
-        torch_tensorrt.Input(shape=[1, *model_meta.input_size], dtype=torch.float),
-    ]
+
+    cfg = model.pretrained_cfg
+    model_name = cfg["architecture"]
+    input_shape = [1, *cfg["input_size"]]
+    inputs = [torch_tensorrt.Input(shape=input_shape, dtype=torch.float)]
+    dummy_input = [torch.randn(*input_shape, dtype=torch.float).cuda()]
+
+    model.eval()
+    model.cuda()
 
     # fp32
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, })
-    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
+    trt_traced_model = torch.jit.trace(trt_ts_module, dummy_input)
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_name, "fp32")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
-    torch.jit.save(trt_ts_module, model_ts)
+    torch.jit.save(trt_traced_model, model_ts)
 
     # fp16
     trt_ts_module = torch_tensorrt.compile(model, inputs=inputs, enabled_precisions={torch.float, torch.half, })
-    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    trt_traced_model = torch.jit.trace(trt_ts_module, dummy_input)
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_name, "fp16")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
-    torch.jit.save(trt_ts_module, model_ts)
+    torch.jit.save(trt_traced_model, model_ts)
 
     # int8
     frames = []
     for frame in read_all_frames():
-        frame = preprocess(frame, model_meta)[0]
+        frame = preprocess(frame, cfg["input_size"], cfg["mean"], cfg["std"])[0]
         frames.append(frame)
 
     frames = torch.tensor(numpy.array(frames))
-    dataloader = DataLoader(TensorDataset(frames), batch_size=1)
+    calib_dataloader = DataLoader(TensorDataset(frames), batch_size=1)
 
     calibrator = torch_tensorrt.ptq.DataLoaderCalibrator(
-        dataloader,
-        cache_file="./calibration.cache",
+        calib_dataloader,
         use_cache=False,
-        algo_type=torch_tensorrt.ptq.CalibrationAlgo.ENTROPY_CALIBRATION_2,
-        device=torch.device("cuda:0"),
+        algo_type=torch_tensorrt.ptq.CalibrationAlgo.MINMAX_CALIBRATION,
+        device=torch.device('cuda:0')
     )
 
     trt_ts_module = torch_tensorrt.compile(
         model, inputs=inputs,
         enabled_precisions={torch.float, torch.half, torch.int8},
         calibrator=calibrator,
-        device={
-            "device_type": torch_tensorrt.DeviceType.GPU,
-            "gpu_id": 0,
-            "dla_core": 0,
-            "allow_gpu_fallback": False,
-            "disable_tf32": False
-        })
+        device="cuda:0")
 
-    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_meta.name, "int8")
+    trt_traced_model = torch.jit.trace(trt_ts_module, dummy_input)
+    model_ts = PYTORCH_TRT_MODEL_PATH_PATTERN % (model_name, "int8")
     Path(model_ts).parent.mkdir(parents=True, exist_ok=True)
-    torch.jit.save(trt_ts_module, model_ts)
+    torch.jit.save(trt_traced_model, model_ts)
 
 
-def convert_tensorRT_by_trtexec(model_meta: ModelMeta, model: Module) -> None:
+def convert_tensorRT_by_trtexec(model: Module) -> None:
+    logging.info("Converting Model to TensorRT...")
+
+    cfg = model.pretrained_cfg
+    model_name = cfg["architecture"]
+    input_shape = [1, *cfg["input_size"]]
+
+    model.eval()
+    model.cuda()
+
     # convert to onnx
-    onnx_path = ONNX_MODEL_PATH_PATTERN % model_meta.name
+    onnx_path = ONNX_MODEL_PATH_PATTERN % model_name
     Path(onnx_path).parent.mkdir(parents=True, exist_ok=True)
-    dummy_input = torch.randn(1, 3, 224, 224).cuda()
+    dummy_input = torch.randn(*input_shape).cuda()
     torch.onnx.export(model, (dummy_input,), onnx_path)
 
     # convert to tensorrt engine (FP32)
-    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_meta.name, "fp32")
+    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_name, "fp32")
     subprocess.run([
         "trtexec",
         f"--onnx={onnx_path}",
@@ -118,7 +123,7 @@ def convert_tensorRT_by_trtexec(model_meta: ModelMeta, model: Module) -> None:
     ])
 
     # convert to tensorrt engine (FP16)
-    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_meta.name, "fp16")
+    plan_path = TRTEXEC_MODEL_PATH_PATTERN % (model_name, "fp16")
     subprocess.run([
         "trtexec",
         "--fp16",
@@ -129,18 +134,19 @@ def convert_tensorRT_by_trtexec(model_meta: ModelMeta, model: Module) -> None:
 
 @dataclass
 class Args:
-    model: str = choice(*MODEL_MAP.keys(), "all", alias=["-m"], default="resnet_50")
+    model: str = choice(*MODEL_LIST, "all", alias=["-m"], default="resnet50")
 
 
 def main(args: Args) -> None:
     download_video_and_image()
-    models = MODEL_MAP.keys() if args.model == "all" else [args.model]
+    models = MODEL_LIST if args.model == "all" else [args.model]
 
     for model_name in models:
-        model_meta = MODEL_MAP[model_name]
-        model = download_model(model_meta)
-        convert_tensorRT_by_torchTRT(model_meta, model)
-        convert_tensorRT_by_trtexec(model_meta, model)
+        model = timm.create_model(model_name, pretrained=True)
+        with open(MODEL_CFG_PATH_PATTERN % model_name, "w", encoding="utf-8") as f:
+            json.dump(model.pretrained_cfg, f)
+        convert_tensorRT_by_torchTRT(model)
+        convert_tensorRT_by_trtexec(model)
 
 
 def parse_args(args: List[str]):
